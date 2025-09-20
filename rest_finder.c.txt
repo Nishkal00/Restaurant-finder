@@ -1,0 +1,481 @@
+#include <stdio.h>
+#include <math.h>
+#include <string.h>
+#include <setjmp.h>
+
+#define MAX_HOTELS 100
+#define TOP_RESULTS 5
+#define HOTEL_DATA_FILE "hotels_data.txt"
+#define BOOKING_FILE "bookings.txt"
+
+jmp_buf jump_buffer;
+
+typedef struct {
+    char name[50];
+    char cuisine[30];
+    float x, y;
+    float rating;
+    float price; // Added price field
+} Hotel;
+
+typedef struct {
+    int hour;
+    int minute;
+} BookingTime;
+
+void swap(Hotel *a, Hotel *b) {
+    Hotel temp = *a;
+    *a = *b;
+    *b = temp;
+}
+
+int partition(Hotel hotels[], float distances[], int low, int high) {
+    float pivot = distances[high];
+    int i = low - 1;
+    for (register int j = low; j < high; j++) {
+        if (distances[j] < pivot) {
+            i++;
+            swap(&hotels[i], &hotels[j]);
+            float temp = distances[i];
+            distances[i] = distances[j];
+            distances[j] = temp;
+        }
+    }
+    swap(&hotels[i + 1], &hotels[high]);
+    float temp = distances[i + 1];
+    distances[i + 1] = distances[high];
+    distances[high] = temp;
+    return i + 1;
+}
+
+void quicksort(Hotel hotels[], float distances[], int low, int high) {
+    if (low < high) {
+        int pivotIndex = partition(hotels, distances, low, high);
+        quicksort(hotels, distances, low, pivotIndex - 1);
+        quicksort(hotels, distances, pivotIndex + 1, high);
+    }
+}
+
+float calculateDistance(float x1, float y1, float x2, float y2) {
+    return sqrtf((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
+}
+
+int loadHotelsFromFile(Hotel hotels[], int max) {
+    FILE *fp = fopen(HOTEL_DATA_FILE, "r");
+    if (!fp) {
+        printf("No hotel data file found. Please create '%s' with hotel data.\n", HOTEL_DATA_FILE);
+        return 0;
+    }
+    int count = 0;
+    // Now expecting 6 fields: name, cuisine, x, y, rating, price
+    while (count < max && fscanf(fp, "%49[^,],%29[^,],%f,%f,%f,%f\n",
+        hotels[count].name, hotels[count].cuisine,
+        &hotels[count].x, &hotels[count].y, &hotels[count].rating, &hotels[count].price) == 6) {
+        count++;
+    }
+    fclose(fp);
+    return count;
+}
+
+void sortHotelsByDistance(Hotel hotels[], int n, float user_x, float user_y) {
+    float distances[MAX_HOTELS];
+    register int i;
+    for (i = 0; i < n; i++) {
+        distances[i] = calculateDistance(user_x, user_y, hotels[i].x, hotels[i].y);
+    }
+    quicksort(hotels, distances, 0, n - 1);
+    printf("\nTop %d Nearest Hotels:\n", TOP_RESULTS);
+    for (i = 0; i < n && i < TOP_RESULTS; i++) {
+        printf("%s (Cuisine: %s, Rating: %.1f, Price: %.2f, Distance: %.2f units)\n",
+            hotels[i].name, hotels[i].cuisine, hotels[i].rating, hotels[i].price, distances[i]);
+    }
+}
+
+void sortHotelsByRating(Hotel hotels[], int n, float user_x, float user_y) {
+    float distances[MAX_HOTELS];
+    register int i, j;
+    for (i = 0; i < n; i++) {
+        distances[i] = calculateDistance(user_x, user_y, hotels[i].x, hotels[i].y);
+    }
+    for (i = 0; i < n - 1; i++) {
+        for (j = 0; j < n - i - 1; j++) {
+            if (
+                (hotels[j].rating < hotels[j + 1].rating) ||
+                (hotels[j].rating == hotels[j + 1].rating && distances[j] > distances[j + 1])
+            ) {
+                swap(&hotels[j], &hotels[j + 1]);
+                float temp = distances[j];
+                distances[j] = distances[j + 1];
+                distances[j + 1] = temp;
+            }
+        }
+    }
+    printf("\nTop %d Hotels Based on Rating (and Distance for ties):\n", TOP_RESULTS);
+    for (i = 0; i < n && i < TOP_RESULTS; i++) {
+        printf("%s (Cuisine: %s, Rating: %.1f, Price: %.2f, Distance: %.2f units)\n",
+            hotels[i].name, hotels[i].cuisine, hotels[i].rating, hotels[i].price, distances[i]);
+    }
+}
+
+void filterHotelsByCuisine(Hotel hotels[], int n, const char *cuisine, float user_x, float user_y) {
+    printf("\nHotels serving %s cuisine:\n", cuisine);
+    register int i;
+    int found = 0;
+    for (i = 0; i < n; i++) {
+        if (strcasecmp(hotels[i].cuisine, cuisine) == 0) {
+            float distance = calculateDistance(user_x, user_y, hotels[i].x, hotels[i].y);
+            printf("%s (Rating: %.1f, Price: %.2f, Distance: %.2f units)\n",
+                hotels[i].name, hotels[i].rating, hotels[i].price, distance);
+            found = 1;
+        }
+    }
+    if (!found) {
+        printf("No hotels found with the specified cuisine type.\n");
+    }
+}
+
+// New: Filter hotels by price
+void filterHotelsByPrice(Hotel hotels[], int n, float max_price, float user_x, float user_y) {
+    printf("\nHotels with price <= %.2f:\n", max_price);
+    int found = 0;
+    for (int i = 0; i < n; i++) {
+        if (hotels[i].price <= max_price) {
+            float distance = calculateDistance(user_x, user_y, hotels[i].x, hotels[i].y);
+            printf("%s (Cuisine: %s, Rating: %.1f, Price: %.2f, Distance: %.2f units)\n",
+                hotels[i].name, hotels[i].cuisine, hotels[i].rating, hotels[i].price, distance);
+            found = 1;
+        }
+    }
+    if (!found) {
+        printf("No hotels found within the specified price.\n");
+    }
+}
+
+// New: Filter hotels by multiple filters (rating, price, cuisine)
+void filterHotelsByMultiple(Hotel hotels[], int n, float min_rating, float max_price, const char *cuisine, float user_x, float user_y) {
+    printf("\nHotels matching all filters (min rating: %.1f, max price: %.2f, cuisine: %s):\n", min_rating, max_price, cuisine);
+    int found = 0;
+    for (int i = 0; i < n; i++) {
+        if (
+            hotels[i].rating >= min_rating &&
+            hotels[i].price <= max_price &&
+            (strlen(cuisine) == 0 || strcasecmp(hotels[i].cuisine, cuisine) == 0)
+        ) {
+            float distance = calculateDistance(user_x, user_y, hotels[i].x, hotels[i].y);
+            printf("%s (Cuisine: %s, Rating: %.1f, Price: %.2f, Distance: %.2f units)\n",
+                hotels[i].name, hotels[i].cuisine, hotels[i].rating, hotels[i].price, distance);
+            found = 1;
+        }
+    }
+    if (!found) {
+        printf("No hotels found matching all filters.\n");
+    }
+}
+
+void handleError(const char *msg) {
+    printf("Error: %s\n", msg);
+    longjmp(jump_buffer, 1);
+}
+
+void addHotelToFile() {
+    Hotel h;
+    char buf[100];
+    printf("Enter hotel name: ");
+    if (!fgets(h.name, sizeof(h.name), stdin)) return;
+    h.name[strcspn(h.name, "\n")] = 0;
+
+    printf("Enter cuisine: ");
+    if (!fgets(h.cuisine, sizeof(h.cuisine), stdin)) return;
+    h.cuisine[strcspn(h.cuisine, "\n")] = 0;
+
+    printf("Enter x coordinate: ");
+    if (!fgets(buf, sizeof(buf), stdin) || sscanf(buf, "%f", &h.x) != 1) {
+        printf("Invalid x coordinate!\n"); return;
+    }
+    printf("Enter y coordinate: ");
+    if (!fgets(buf, sizeof(buf), stdin) || sscanf(buf, "%f", &h.y) != 1) {
+        printf("Invalid y coordinate!\n"); return;
+    }
+    printf("Enter rating: ");
+    if (!fgets(buf, sizeof(buf), stdin) || sscanf(buf, "%f", &h.rating) != 1) {
+        printf("Invalid rating!\n"); return;
+    }
+    printf("Enter price: ");
+    if (!fgets(buf, sizeof(buf), stdin) || sscanf(buf, "%f", &h.price) != 1) {
+        printf("Invalid price!\n"); return;
+    }
+
+    FILE *fp = fopen(HOTEL_DATA_FILE, "a");
+    if (!fp) {
+        printf("Could not open file for appending hotel data.\n");
+        return;
+    }
+    fprintf(fp, "%s,%s,%.2f,%.2f,%.1f,%.2f\n", h.name, h.cuisine, h.x, h.y, h.rating, h.price);
+    fclose(fp);
+    printf("Hotel added successfully!\n");
+}
+
+void initializeHotelFileIfMissing() {
+    FILE *fp = fopen(HOTEL_DATA_FILE, "r");
+    if (fp) {
+        fclose(fp);
+        return;
+    }
+    fp = fopen(HOTEL_DATA_FILE, "w");
+    if (!fp) {
+        printf("Could not create hotel data file.\n");
+        return;
+    }
+    // Added price as last field for each hotel
+    fprintf(fp, "Hotel Paradise,Italian,10.20,15.30,4.5,500.00\n");
+    fprintf(fp, "Spice Haven,Indian,20.10,25.50,4.7,350.00\n");
+    fprintf(fp, "Sushi Delight,Japanese,30.60,40.20,4.3,700.00\n");
+    fprintf(fp, "Grill House,Barbecue,12.30,18.90,4.2,400.00\n");
+    fprintf(fp, "The Vegan Bistro,Vegan,5.10,8.70,4.8,300.00\n");
+    fprintf(fp, "Seafood Bliss,Seafood,22.50,31.40,4.6,650.00\n");
+    fprintf(fp, "Classic Diner,American,18.80,26.30,4.1,250.00\n");
+    fprintf(fp, "French Elegance,French,40.00,45.50,4.4,800.00\n");
+    fprintf(fp, "Mexican Fiesta,Mexican,7.60,11.90,4.3,350.00\n");
+    fprintf(fp, "Thai Essence,Thai,35.20,38.10,4.5,550.00\n");
+    fclose(fp);
+}
+
+void addDefaultHotelsIfEmpty() {
+    FILE *fp = fopen(HOTEL_DATA_FILE, "r");
+    if (!fp) {
+        // File does not exist, let initializeHotelFileIfMissing handle it
+        return;
+    }
+    int isEmpty = 1;
+    int c = fgetc(fp);
+    if (c != EOF) isEmpty = 0;
+    fclose(fp);
+
+    if (isEmpty) {
+        fp = fopen(HOTEL_DATA_FILE, "w");
+        if (!fp) {
+            printf("Could not open hotel data file to add defaults.\n");
+            return;
+        }
+        fprintf(fp, "Hotel Paradise,Italian,10.20,15.30,4.5,500.00\n");
+        fprintf(fp, "Spice Haven,Indian,20.10,25.50,4.7,350.00\n");
+        fprintf(fp, "Sushi Delight,Japanese,30.60,40.20,4.3,700.00\n");
+        fprintf(fp, "Grill House,Barbecue,12.30,18.90,4.2,400.00\n");
+        fprintf(fp, "The Vegan Bistro,Vegan,5.10,8.70,4.8,300.00\n");
+        fprintf(fp, "Seafood Bliss,Seafood,22.50,31.40,4.6,650.00\n");
+        fprintf(fp, "Classic Diner,American,18.80,26.30,4.1,250.00\n");
+        fprintf(fp, "French Elegance,French,40.00,45.50,4.4,800.00\n");
+        fprintf(fp, "Mexican Fiesta,Mexican,7.60,11.90,4.3,350.00\n");
+        fprintf(fp, "Thai Essence,Thai,35.20,38.10,4.5,550.00\n");
+        fclose(fp);
+        printf("Default hotel entries added to '%s'.\n", HOTEL_DATA_FILE);
+    }
+}
+
+void createBackupFile() {
+    // Backup hotel data
+    FILE *src = fopen(HOTEL_DATA_FILE, "r");
+    if (!src) {
+        printf("No hotel data file to backup.\n");
+    } else {
+        FILE *dest = fopen("hotels_data_backup.txt", "w");
+        if (!dest) {
+            printf("Could not create hotel data backup file.\n");
+        } else {
+            char buf[256];
+            while (fgets(buf, sizeof(buf), src)) {
+                fputs(buf, dest);
+            }
+            fclose(dest);
+            printf("Hotel data backup created as hotels_data_backup.txt\n");
+        }
+        fclose(src);
+    }
+
+    // Backup booking data
+    src = fopen(BOOKING_FILE, "r");
+    if (!src) {
+        printf("No booking data file to backup.\n");
+    } else {
+        FILE *dest = fopen("bookings_backup.txt", "w");
+        if (!dest) {
+            printf("Could not create booking data backup file.\n");
+        } else {
+            char buf[256];
+            while (fgets(buf, sizeof(buf), src)) {
+                fputs(buf, dest);
+            }
+            fclose(dest);
+            printf("Booking data backup created as bookings_backup.txt\n");
+        }
+        fclose(src);
+    }
+}
+
+// Helper for robust float pair input
+int getFloatPair(const char *prompt, float *a, float *b) {
+    char buf[100];
+    printf("%s", prompt);
+    if (!fgets(buf, sizeof(buf), stdin)) return 0;
+    return sscanf(buf, "%f %f", a, b) == 2;
+}
+
+// Helper for robust int input
+int getInt(const char *prompt, int *val) {
+    char buf[100];
+    printf("%s", prompt);
+    if (!fgets(buf, sizeof(buf), stdin)) return 0;
+    return sscanf(buf, "%d", val) == 1;
+}
+
+// Helper for robust time input in hh:mm format
+int getBookingTime(BookingTime *bt) {
+    char buf[100];
+    printf("Enter time for booking in hours:minutes format (hh:mm): ");
+    if (!fgets(buf, sizeof(buf), stdin)) return 0;
+    int h, m;
+    if (sscanf(buf, "%d:%d", &h, &m) == 2 && h >= 0 && h < 24 && m >= 0 && m < 60) {
+        bt->hour = h;
+        bt->minute = m;
+        return 1;
+    }
+    return 0;
+}
+
+// Add booking to file
+void addBooking(const char *hotelName, BookingTime bt, float user_x, float user_y) {
+    FILE *fp = fopen(BOOKING_FILE, "a");
+    if (!fp) {
+        printf("Could not open booking file for writing.\n");
+        return;
+    }
+    fprintf(fp, "Hotel: %s | Time: %02d:%02d | User Location: %.2f,%.2f\n", hotelName, bt.hour, bt.minute, user_x, user_y);
+    fclose(fp);
+    printf("Booking for '%s' at %02d:%02d saved successfully!\n", hotelName, bt.hour, bt.minute);
+}
+
+int main() {
+    Hotel hotels[MAX_HOTELS];
+    int n;
+
+    initializeHotelFileIfMissing();
+    addDefaultHotelsIfEmpty();
+
+    if (setjmp(jump_buffer) == 0) {
+        // Booking time input
+        BookingTime bt;
+        while (!getBookingTime(&bt)) {
+            printf("Invalid time! Please enter in hh:mm format (e.g., 18:30).\n");
+        }
+        printf("Booking time set to %02d:%02d\n", bt.hour, bt.minute);
+
+        float user_x, user_y;
+        while (!getFloatPair("Enter your coordinates (x, y): ", &user_x, &user_y)) {
+            printf("Invalid coordinates input! Please enter two numbers separated by space.\n");
+        }
+
+        int running = 1;
+        while (running) {
+            int choice;
+            printf("\nMenu:\n");
+            printf("1. Nearest hotels\n2. Highest-rated hotels\n3. Hotels by cuisine\n4. Hotels by price\n5. Add a hotel\n6. Book a hotel\n7. Search with multiple filters\n8. Exit\n");
+            while (!getInt("Enter your choice: ", &choice)) {
+                printf("Invalid menu choice! Please enter a number.\n");
+            }
+
+            if (choice == 1) {
+                n = loadHotelsFromFile(hotels, MAX_HOTELS);
+                if (n == 0) {
+                    printf("No hotel data available.\n");
+                } else {
+                    sortHotelsByDistance(hotels, n, user_x, user_y);
+                }
+            } else if (choice == 2) {
+                n = loadHotelsFromFile(hotels, MAX_HOTELS);
+                if (n == 0) {
+                    printf("No hotel data available.\n");
+                } else {
+                    sortHotelsByRating(hotels, n, user_x, user_y);
+                }
+            } else if (choice == 3) {
+                n = loadHotelsFromFile(hotels, MAX_HOTELS);
+                if (n == 0) {
+                    printf("No hotel data available.\n");
+                } else {
+                    char cuisine[30];
+                    printf("Enter cuisine type: ");
+                    if (!fgets(cuisine, sizeof(cuisine), stdin)) {
+                        printf("Input error.\n");
+                        continue;
+                    }
+                    cuisine[strcspn(cuisine, "\n")] = 0;
+                    filterHotelsByCuisine(hotels, n, cuisine, user_x, user_y);
+                }
+            } else if (choice == 4) {
+                n = loadHotelsFromFile(hotels, MAX_HOTELS);
+                if (n == 0) {
+                    printf("No hotel data available.\n");
+                } else {
+                    float max_price;
+                    char buf[32];
+                    printf("Enter maximum price: ");
+                    if (!fgets(buf, sizeof(buf), stdin) || sscanf(buf, "%f", &max_price) != 1) {
+                        printf("Invalid price input!\n");
+                        continue;
+                    }
+                    filterHotelsByPrice(hotels, n, max_price, user_x, user_y);
+                }
+            } else if (choice == 5) {
+                addHotelToFile();
+            } else if (choice == 6) {
+                // Booking option
+                n = loadHotelsFromFile(hotels, MAX_HOTELS);
+                if (n == 0) {
+                    printf("No hotel data available to book.\n");
+                } else {
+                    printf("Available hotels:\n");
+                    register int i;
+                    for (i = 0; i < n; i++) {
+                        printf("%d. %s\n", i + 1, hotels[i].name);
+                    }
+                    int sel = 0;
+                    while (1) {
+                        printf("Enter the number of the hotel you want to book: ");
+                        char buf[32];
+                        if (!fgets(buf, sizeof(buf), stdin)) break;
+                        if (sscanf(buf, "%d", &sel) == 1 && sel >= 1 && sel <= n) break;
+                        printf("Invalid selection. Try again.\n");
+                    }
+                    addBooking(hotels[sel - 1].name, bt, user_x, user_y);
+                }
+            } else if (choice == 7) {
+                n = loadHotelsFromFile(hotels, MAX_HOTELS);
+                if (n == 0) {
+                    printf("No hotel data available.\n");
+                } else {
+                    float min_rating, max_price;
+                    char cuisine[30];
+                    char buf[32];
+                    printf("Enter minimum rating (or 0 for any): ");
+                    if (!fgets(buf, sizeof(buf), stdin) || sscanf(buf, "%f", &min_rating) != 1) min_rating = 0;
+                    printf("Enter maximum price (or a large number for any): ");
+                    if (!fgets(buf, sizeof(buf), stdin) || sscanf(buf, "%f", &max_price) != 1) max_price = 1e9;
+                    printf("Enter cuisine type (or leave blank for any): ");
+                    if (!fgets(cuisine, sizeof(cuisine), stdin)) cuisine[0] = '\0';
+                    cuisine[strcspn(cuisine, "\n")] = 0;
+                    filterHotelsByMultiple(hotels, n, min_rating, max_price, cuisine, user_x, user_y);
+                }
+            } else if (choice == 8) {
+                createBackupFile();
+                printf("Exiting program. Goodbye!\n");
+                running = 0;
+            } else {
+                printf("Invalid choice!\n");
+            }
+        }
+    } else {
+        printf("Program terminated due to input error.\n");
+    }
+
+    return 0;
+}
